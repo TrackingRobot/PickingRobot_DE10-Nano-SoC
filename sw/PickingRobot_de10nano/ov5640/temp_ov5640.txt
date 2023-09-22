@@ -1,0 +1,502 @@
+/**
+ *******************************************************************************
+ * @file  exmc/exmc_smc_nor_s29gl064n90tfi03/source/main.c
+ * @brief This example demonstrates NOR Flash function.
+ @verbatim
+   Change Logs:
+   Date             Author          Notes
+   2023-09-12       CDT             First version
+ @endverbatim
+ *******************************************************************************
+ * Copyright (C) 2022-2023, Xiaohua Semiconductor Co., Ltd. All rights reserved.
+ *
+ * This software component is licensed by XHSC under BSD 3-Clause license
+ * (the "License"); You may not use this file except in compliance with the
+ * License. You may obtain a copy of the License at:
+ *                    opensource.org/licenses/BSD-3-Clause
+ *
+ *******************************************************************************
+ */
+
+/*******************************************************************************
+ * Include files
+ ******************************************************************************/
+#include "main.h"
+#include "ev_hc32f472_lqfp100_mem_ov5640.h"
+#include "hc32_ll_dma.h"
+#include "hc32_ll_aos.h"
+
+/**
+ * @addtogroup HC32F472_DDL_Examples
+ * @{
+ */
+
+/**
+ EXMC_SMC_BSP_S29GL064N90TFI03
+
+ */
+
+/*******************************************************************************
+ * Local type definitions ('typedef')
+ ******************************************************************************/
+
+/*******************************************************************************
+ * Local pre-processor symbols/macros ('#define')
+ ******************************************************************************/
+/* Peripheral register WE/WP selection */
+#define LL_PERIPH_SEL                   (LL_PERIPH_GPIO | LL_PERIPH_FCG | LL_PERIPH_PWC_CLK_RMU | \
+                                         LL_PERIPH_EFM | LL_PERIPH_SRAM)
+#define DATA_BUF_LEN                    (0x1000UL)
+/* SET/RESET turn on/off the readout and write in value print */
+#define PRINT_VAL
+/* define interval for read and write print */
+#define VAL_PRINT_INTVAL                (DATA_BUF_LEN + 1) // value beyond DATA_BUF_LEN will not print
+
+/* define LED0 LED1 macros */
+#define EXMC_LED0_PORT                  (GPIO_PORT_A)
+#define EXMC_LED0_PIN                   (GPIO_PIN_12)
+#define EXMC_LED1_PORT                  (GPIO_PORT_A)
+#define EXMC_LED1_PIN                   (GPIO_PIN_11)
+#define EXMC_LED_OFF(port, pin)         (GPIO_SetPins(port, pin))
+#define EXMC_LED_ON(port, pin)          (GPIO_ResetPins(port, pin))
+#define EXMC_LED_TOGGLE(port, pin)      (GPIO_TogglePins(port, pin))
+
+/* NOR operations Timeout definitions */
+#define S29GL064_PGM_TIMEOUT            (0x01000000UL)  /* Program NOR  timeout */
+#define S29GL064_ERASE_SECTOR_TIMEOUT   (0x01000000UL)  /* Erase NOR block timeout */
+
+#define S29GL064_BUF_PGM_HALFWORD_SIZE  (S29GL064_BYTES_PER_BUF_PGM >> 1UL)
+
+#define DATA_BUFFER_LEN                 (S29GL064_BUF_PGM_HALFWORD_SIZE)
+
+
+/*******************************************************************************
+ * Global variable definitions (declared in header file with 'extern')
+ ******************************************************************************/
+
+/*******************************************************************************
+ * Local function prototypes ('static')
+ ******************************************************************************/
+
+/*******************************************************************************
+ * Local variable definitions ('static')
+ ******************************************************************************/
+
+static uint16_t m_au16ReadData[DATA_BUF_LEN];
+static uint8_t au8WriteData[] = {0x12, 0x34};
+
+static uint16_t m_au16Id[4];
+static __IO uint8_t m_u8TestError __UNUSED = 0U;
+static stc_ov5640_reg_value_t astcOv5640Cfg[] = {
+    {0x3008, 0x42}, // software power down
+    {0x3103, 0x03}, // sysclk from pll
+    {0x3017, 0xff}, // Frex, Vsync, Href, PCLK, D[9:6] output
+    {0x3018, 0xff}, // D[5:0], GPIO[1:0] output
+    {0x3034, 0x1a}, // PLL, MIPI 10-bit
+    {0x3037, 0x13}, // PLL
+    {0x3108, 0x01}, // clock divider
+    {0x3630, 0x36},
+    {0x3631, 0x0e},
+    {0x3632, 0xe2},
+    {0x3633, 0x12},
+    {0x3621, 0xe0},
+    {0x3704, 0xa0},
+    {0x3703, 0x5a},
+    {0x3715, 0x78},
+    {0x3717, 0x01},
+    {0x370b, 0x60},
+    {0x3705, 0x1a},
+    {0x3905, 0x02},
+    {0x3906, 0x10},
+    {0x3901, 0x0a},
+    {0x3731, 0x12},
+    {0x3600, 0x08}, // VCM debug
+    {0x3601, 0x33}, // VCM debug
+    {0x302d, 0x60}, // system control
+    {0x3620, 0x52},
+    {0x371b, 0x20},
+    {0x471c, 0x50},
+    {0x3a13, 0x43}, // pre-gain = 1.05x
+    {0x3a18, 0x00}, // AEC gain ceiling = 7.75x
+    {0x3a19, 0x7c}, // AEC gain ceiling
+    {0x3635, 0x13},
+    {0x3636, 0x03},
+    {0x3634, 0x40},
+    {0x3622, 0x01},
+    //50/60Hz detection
+    {0x3c01, 0x34}, // sum auto, band counter enable, threshold = 4
+    {0x3c04, 0x28}, // threshold low sum
+    {0x3c05, 0x98}, // threshold high sum
+    {0x3c06, 0x00}, // light meter 1 threshold H
+    {0x3c07, 0x07}, // light meter 1 threshold L
+    {0x3c08, 0x00}, // light meter 2 threshold H
+    {0x3c09, 0x1c}, // light meter 2 threshold L
+    {0x3c0a, 0x9c}, // sample number H
+    {0x3c0b, 0x40}, // sample number L
+    {0x3810, 0x00}, // X offset
+    {0x3811, 0x10}, // X offset
+    {0x3812, 0x00}, // Y offset
+    {0x3708, 0x64},
+    {0x4001, 0x02}, // BLC start line
+    {0x4005, 0x1a}, // BLC always update
+    {0x3000, 0x00}, // enable MCU, OTP
+    {0x3004, 0xff}, // enable BIST, MCU memory, MCU, OTP, STROBE, D5060, timing, array clock
+    {0x300e, 0x58}, // MIPI 2 lane? power down PHY HS TX, PHY LP RX, DVP enable
+    {0x302e, 0x00},
+    {0x4300, 0x30}, // YUV 422, YUYV
+    {0x501f, 0x00}, // ISP YUV 422
+    {0x440e, 0x00},
+    {0x5000, 0xa7}, // LENC on, raw gamma on, BPC on, WPC on, CIP on
+    //AEC target
+    {0x3a0f, 0x30}, // stable in high
+    {0x3a10, 0x28}, // stable in low
+    {0x3a1b, 0x30}, // stable out high
+    {0x3a1e, 0x26}, // stable out low
+    {0x3a11, 0x60}, // fast zone high
+    {0x3a1f, 0x14}, // fast zone low
+    //LENC
+    {0x5800, 0x23},
+    {0x5801, 0x14},
+    {0x5802, 0x0f},
+    {0x5803, 0x0f},
+    {0x5804, 0x12},
+    {0x5805, 0x26},
+    {0x5806, 0x0c},
+    {0x5807, 0x08},
+    {0x5808, 0x05},
+    {0x5809, 0x05},
+    {0x580a, 0x08},
+    {0x580b, 0x0d},
+    {0x580c, 0x08},
+    {0x580d, 0x03},
+    {0x580e, 0x00},
+    {0x580f, 0x00},
+    {0x5810, 0x03},
+    {0x5811, 0x09},
+    {0x5812, 0x07},
+    {0x5813, 0x03},
+    {0x5814, 0x00},
+    {0x5815, 0x01},
+    {0x5816, 0x03},
+    {0x5817, 0x08},
+    {0x5818, 0x0d},
+    {0x5819, 0x08},
+    {0x581a, 0x05},
+    {0x581b, 0x06},
+    {0x581c, 0x08},
+    {0x581d, 0x0e},
+    {0x581e, 0x29},
+    {0x581f, 0x17},
+    {0x5820, 0x11},
+    {0x5821, 0x11},
+    {0x5822, 0x15},
+    {0x5823, 0x28},
+    {0x5824, 0x46},
+    {0x5825, 0x26},
+    {0x5826, 0x08},
+    {0x5827, 0x26},
+    {0x5828, 0x64},
+    {0x5829, 0x26},
+    {0x582a, 0x24},
+    {0x582b, 0x22},
+    {0x582c, 0x24},
+    {0x582d, 0x24},
+    {0x582e, 0x06},
+    {0x582f, 0x22},
+    {0x5830, 0x40},
+    {0x5831, 0x42},
+    {0x5832, 0x24},
+    {0x5833, 0x26},
+    {0x5834, 0x24},
+    {0x5835, 0x22},
+    {0x5836, 0x22},
+    {0x5837, 0x26},
+    {0x5838, 0x44},
+    {0x5839, 0x24},
+    {0x583a, 0x26},
+    {0x583b, 0x28},
+    {0x583c, 0x42},
+    {0x583d, 0xce}, // LENC BR offset
+    //AWB
+    {0x5180, 0xff}, // AWB B block
+    {0x5181, 0xf2}, // AWB control
+    {0x5182, 0x00}, // [7:4] max local counter, [3:0] max fast counter
+    {0x5183, 0x14}, // AWB advance
+    {0x5184, 0x25},
+    {0x5185, 0x24},
+    {0x5186, 0x09},
+    {0x5187, 0x09},
+    {0x5188, 0x09},
+    {0x5189, 0x75},
+    {0x518a, 0x54},
+    {0x518b, 0xe0},
+    {0x518c, 0xb2},
+    {0x518d, 0x42},
+    {0x518e, 0x3d},
+    {0x518f, 0x56},
+    {0x5190, 0x46},
+    {0x5191, 0xf8}, // AWB top limit
+    {0x5192, 0x04}, // AWB botton limit
+    {0x5193, 0x70}, // Red limit
+    {0x5194, 0xf0}, // Green Limit
+    {0x5195, 0xf0}, // Blue limit
+    {0x5196, 0x03}, // AWB control
+    {0x5197, 0x01}, // local limit
+    {0x5198, 0x04},
+    {0x5199, 0x12},
+    {0x519a, 0x04},
+    {0x519b, 0x00},
+    {0x519c, 0x06},
+    {0x519d, 0x82},
+    {0x519e, 0x38}, // AWB control
+    //Gamma
+    {0x5480, 0x01}, // BIAS plus on
+    {0x5481, 0x08},
+    {0x5482, 0x14},
+    {0x5483, 0x28},
+    {0x5484, 0x51},
+    {0x5485, 0x65},
+    {0x5486, 0x71},
+    {0x5487, 0x7d},
+    {0x5488, 0x87},
+    {0x5489, 0x91},
+    {0x548a, 0x9a},
+    {0x548b, 0xaa},
+    {0x548c, 0xb8},
+    {0x548d, 0xcd},
+    {0x548e, 0xdd},
+    {0x548f, 0xea},
+    {0x5490, 0x1d},
+    //color matrix
+    {0x5381, 0x1e}, // CMX1 for Y
+    {0x5382, 0x5b}, // CMX2 for Y
+    {0x5383, 0x08}, // CMX3 for Y
+    {0x5384, 0x0a}, // CMX4 for U
+    {0x5385, 0x7e}, // CMX5 for U
+    {0x5386, 0x88}, // CMX6 for U
+    {0x5387, 0x7c}, // CMX7 for V
+    {0x5388, 0x6c}, // CMX8 for V
+    {0x5389, 0x10}, // CMX9 for V
+    {0x538a, 0x01}, // sign[9]
+    {0x538b, 0x98}, // sign[8:1]
+    //UV adjust
+    {0x5580, 0x06}, // brightness on, saturation on
+    {0x5583, 0x40}, // Sat U
+    {0x5584, 0x10}, // Sat V
+    {0x5589, 0x10}, // UV adjust th1
+    {0x558a, 0x00}, // UV adjust th2[8]
+    {0x558b, 0xf8}, // UV adjust th2[7:0]
+    {0x501d, 0x40}, // enable manual offset in contrast
+    //CIP
+    {0x5300, 0x08}, // sharpen-MT th1
+    {0x5301, 0x30}, // sharpen-MT th2
+    {0x5302, 0x10}, // sharpen-MT off1
+    {0x5303, 0x00}, // sharpen-MT off2
+    {0x5304, 0x08}, // De-noise th1
+    {0x5305, 0x30}, // De-noise th2
+    {0x5306, 0x08}, // De-noise off1
+    {0x5307, 0x16}, // De-noise off2
+    {0x5309, 0x08}, // sharpen-TH th1
+    {0x530a, 0x30}, // sharpen-TH th2
+    {0x530b, 0x04}, // sharpen-TH off1
+    {0x530c, 0x06}, // sharpen-TH off2
+    {0x5025, 0x00},
+    {0x3008, 0x02}, // wake up from software power down
+};
+/*******************************************************************************
+ * Function implementation - global ('extern') and local ('static')
+ ******************************************************************************/
+
+/**
+ * @brief  Intialize EXMC board LEDs
+ * @param  None
+ * @retval None
+ */
+static void EXMC_LedInit(void)
+{
+    stc_gpio_init_t stcGpioInit;
+    GPIO_StructInit(&stcGpioInit);
+    stcGpioInit.u16PinDir = PIN_DIR_OUT;
+    GPIO_Init(EXMC_LED0_PORT, EXMC_LED0_PIN, &stcGpioInit);
+    GPIO_Init(EXMC_LED1_PORT, EXMC_LED1_PIN, &stcGpioInit);
+    EXMC_LED_OFF(EXMC_LED0_PORT, EXMC_LED0_PIN);
+    EXMC_LED_OFF(EXMC_LED1_PORT, EXMC_LED1_PIN);
+}
+
+/**
+ * @brief  Intialize DMA and IO ports
+ * @param  None
+ * @retval None
+ */
+/* DMA macros */
+#define DMA_UNITx           (CM_DMA1)
+#define DMA_CHy             (DMA_CH0)
+/* DVP ports macros */
+#define DVP_VSYNC_PORT      (GPIO_PORT_D)
+#define DVP_HSYNC_PORT      (GPIO_PORT_D)
+#define DVP_PCLK_PORT       (GPIO_PORT_D)
+#define DVP_DATA0_PORT      (GPIO_PORT_F)
+#define DVP_DATA1_PORT      (GPIO_PORT_F)
+#define DVP_DATA2_PORT      (GPIO_PORT_F)
+#define DVP_DATA3_PORT      (GPIO_PORT_F)
+#define DVP_DATA4_PORT      (GPIO_PORT_F)
+#define DVP_DATA5_PORT      (GPIO_PORT_F)
+#define DVP_DATA6_PORT      (GPIO_PORT_F)
+#define DVP_DATA7_PORT      (GPIO_PORT_F)
+
+#define DVP_VSYNC_PIN       (GPIO_PIN_00)
+#define DVP_HSYNC_PIN       (GPIO_PIN_01)
+#define DVP_PCLK_PIN        (GPIO_PIN_03)
+#define DVP_DATA0_PIN       (GPIO_PIN_00)
+#define DVP_DATA1_PIN       (GPIO_PIN_01)
+#define DVP_DATA2_PIN       (GPIO_PIN_02)
+#define DVP_DATA3_PIN       (GPIO_PIN_03)
+#define DVP_DATA4_PIN       (GPIO_PIN_04)
+#define DVP_DATA5_PIN       (GPIO_PIN_05)
+#define DVP_DATA6_PIN       (GPIO_PIN_06)
+#define DVP_DATA7_PIN       (GPIO_PIN_07)
+/* Event related ports */
+//#define READ_TRRIGER_PORT   (DVP_PCLK_PORT)
+//#define READ_TRRIGER_PIN    (DVP_PCLK_PIN)
+#define READ_TRRIGER_PORT   (DVP_HSYNC_PORT)
+#define READ_TRRIGER_PIN    (DVP_HSYNC_PIN)
+#define READ_DONE_PORT      (GPIO_PORT_C)
+#define READ_DONE_PIN       (GPIO_PIN_03)
+/* OV5640 control ports */
+#define OV_PWDN_PORT        (GPIO_PORT_C)
+#define OV_PWDN_PIN         (GPIO_PIN_00)
+
+void OV_PowerDownInit(void)
+{
+    stc_gpio_init_t stGpioInit;
+    GPIO_StructInit(&stGpioInit);
+    stGpioInit.u16PinDir = PIN_DIR_OUT;
+    GPIO_Init(OV_PWDN_PORT, OV_PWDN_PIN, &stGpioInit);
+    GPIO_SetPins(OV_PWDN_PORT, OV_PWDN_PIN);
+}
+
+void DmaTransInit(void)
+{
+    /* DMA configure */
+    stc_dma_init_t stDmaInit;
+    DMA_StructInit(&stDmaInit);
+    /* Block size set as a line's date */
+    stDmaInit.u32BlockSize = 1;
+    stDmaInit.u32DataWidth = DMA_DATAWIDTH_8BIT;
+    stDmaInit.u32DestAddr = (uint32_t)m_au16ReadData;
+    stDmaInit.u32DestAddrInc = DMA_DEST_ADDR_INC;
+    stDmaInit.u32SrcAddr = (uint32_t)(&(CM_GPIO->PIDRF));
+    stDmaInit.u32SrcAddrInc = DMA_SRC_ADDR_FIX;
+    /* Completing recveing when end of a frame */
+    stDmaInit.u32TransCount = 1;
+    stDmaInit.u32IntEn = DMA_INT_ENABLE;
+    FCG_Fcg0PeriphClockCmd(FCG0_PERIPH_DMA1, ENABLE);
+    DMA_Cmd(DMA_UNITx, ENABLE);
+    DMA_Init(DMA_UNITx, DMA_CHy, &stDmaInit);
+    DMA_ChCmd(DMA_UNITx, DMA_CHy, ENABLE);
+}
+
+void EXTINT00_SWINT16_Handler(void)
+{
+    NVIC_ClearPendingIRQ(EXTINT_PORT_EIRQ0_IRQn);
+    DmaTransInit();
+}
+
+void Function_PortsInit(void)
+{
+    /* Enable AOS clock */
+    FCG_Fcg0PeriphClockCmd(PWC_FCG0_AOS, ENABLE);
+    /* Set event port function */
+    GPIO_SetFunc(READ_TRRIGER_PORT, READ_TRRIGER_PIN, GPIO_FUNC_26);
+    GPIO_SetFunc(READ_DONE_PORT, READ_DONE_PIN, GPIO_FUNC_26);
+    /* Receiving related ports, hsync and D[9:0]. Set hsync failling edge as event */
+    stc_ep_init_t stcEPInit;
+    EP_StructInit(&stcEPInit);
+    stcEPInit.u32Edge = EP_TRIG_FALLING;
+    stcEPInit.u32Filter = EP_FILTER_OFF;
+    stcEPInit.u32FilterClock = EP_FCLK_DIV1;
+    stcEPInit.u32PinDir = EP_DIR_IN;
+    EP_Init(READ_TRRIGER_PORT, READ_TRRIGER_PIN, &stcEPInit);
+    /* AOS connection: trigger event(pclk), read completion mark event(gpio) */
+    AOS_SetTriggerEventSrc(AOS_DMA1_0, EVT_SRC_EVENT_PORT4);
+    stcEPInit.u32PinDir = EP_DIR_OUT;
+    stcEPInit.u32PinTriggerOps = EP_OPS_TOGGLE;
+    EP_Init(READ_DONE_PORT, READ_DONE_PIN, &stcEPInit);
+    AOS_SetTriggerEventSrc(AOS_EVTPORT34, EVT_SRC_DMA1_BTC0);
+    /* Vsync lauch dma config */
+    stc_gpio_init_t stGpioInit;
+    GPIO_StructInit(&stGpioInit);
+    stGpioInit.u16ExtInt = PIN_EXTINT_ON;
+    GPIO_Init(DVP_VSYNC_PORT, DVP_VSYNC_PIN, &stGpioInit);
+    /* ExtInt config */
+    stc_extint_init_t stcExtIntInit;
+    (void)EXTINT_StructInit(&stcExtIntInit);
+    stcExtIntInit.u32Edge = EXTINT_TRIG_FALLING;
+    stcExtIntInit.u32Filter = EXTINT_FILTER_ON;
+    stcExtIntInit.u32FilterClock = EXTINT_FCLK_DIV8;
+    (void)EXTINT_Init(EXTINT_CH00, &stcExtIntInit);
+    /* Enable interrupt */
+    NVIC_ClearPendingIRQ(EXTINT_PORT_EIRQ0_IRQn);
+    NVIC_SetPriority(EXTINT_PORT_EIRQ0_IRQn, DDL_IRQ_PRIO_DEFAULT);
+    NVIC_EnableIRQ(EXTINT_PORT_EIRQ0_IRQn);
+}
+
+/**
+ * @brief  Main function of EXMC SRAM project
+ * @param  None
+ * @retval int32_t return value, if needed
+ */
+int32_t main(void)
+{
+    uint32_t u32ProgramAddr;
+    stc_ov5640_ll_t stcOv5640LL;
+    /* MCU Peripheral registers write unprotected */
+    LL_PERIPH_WE(LL_PERIPH_SEL);
+    OV_PowerDownInit();
+    /* Initialize system clock: */
+    BSP_CLK_Init();
+    /* EXCLK 50MHz */
+    CLK_SetClockDiv(CLK_BUS_EXCLK, CLK_EXCLK_DIV4);
+    Function_PortsInit();
+//    /* Initialize LED */
+//    EXMC_LedInit();
+    /* OV5640 functions init */
+    stcOv5640LL.Init = BSP_OV5640_Init;
+    stcOv5640LL.Read = SCCB_Receive;
+    stcOv5640LL.Write = SCCB_Transmit;
+    stcOv5640LL.Delay = SCCB_DelayUs;
+    /* Power on */
+    GPIO_ResetPins(OV_PWDN_PORT, OV_PWDN_PIN);
+    if(LL_OK == OV5640_Init(&stcOv5640LL, astcOv5640Cfg, sizeof(astcOv5640Cfg) / sizeof(astcOv5640Cfg[0]))){
+    }
+    /* MCU Peripheral registers write protected */
+    LL_PERIPH_WP(LL_PERIPH_SEL);
+
+    DDL_Printf("nor flash [mcu write and mcu read]\r\n");
+    DDL_Printf("Memory start address:  0x%08x \r\n", (unsigned int)m_u32StartAddr);
+    DDL_Printf("Memory 0x%04x sectors, 0x%08x bytes/sector\r\n", m_u32MemSectors, m_u32MemBytePerSector);
+    DDL_Printf("Memory size (bytes):   0x%08x \r\n", (unsigned int)(m_u32MemSectors * m_u32MemBytePerSector));
+
+    /****************** Error check ******************/
+    if(0 == m_u8TestError){
+        DDL_Printf("nor flash [0x%p, 0x%p]write and read test pass\r\n", m_u32StartAddr, u32ProgramAddr);
+        EXMC_LED_ON(EXMC_LED1_PORT, EXMC_LED1_PIN);
+    } else {
+        DDL_Printf("Manual ID[0x%04x], ID0[0x%04x], ID1[0x%04x], ID2[0x%04x]\r\n", m_au16Id[0], m_au16Id[1], m_au16Id[2], m_au16Id[3]);
+        EXMC_LED_ON(EXMC_LED0_PORT, EXMC_LED0_PIN);
+        EXMC_LED_ON(EXMC_LED1_PORT, EXMC_LED1_PIN);
+    }
+
+    for(;;){
+        DDL_DelayMS(250);
+        //SCCB_Transmit(0, 0, au8WriteData, sizeof(au8WriteData) / sizeof(au8WriteData[0]));
+    }
+}
+
+/**
+ * @}
+ */
+
+/*******************************************************************************
+ * EOF (not truncated)
+ ******************************************************************************/
