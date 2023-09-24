@@ -1,0 +1,7 @@
+{
+	"common_dir" : "C:/intelFPGA/17.1/projects/DE10_NANO_SoC_GHRD_addCamera/",
+	"acds_version" : "Version 17.1.0",
+	"platform" : "windows",
+	"os" : "Windows 7",
+	"qpf" : "DE10_NANO_SoC_GHRD.qpf"
+}
